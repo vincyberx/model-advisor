@@ -1,0 +1,16 @@
+{
+  "name": "model-advisor",
+  "owner": {
+    "name": "Vincyber"
+  },
+  "metadata": {
+    "description": "A Claude Code mod that picks model and effort for each request"
+  },
+  "plugins": [
+    {
+      "name": "model-advisor",
+      "source": "./",
+      "description": "Picks model and effort for each Claude Code request: adjusts effort on its own, asks only before switching to a stronger model"
+    }
+  ]
+}
