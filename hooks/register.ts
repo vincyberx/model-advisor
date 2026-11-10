@@ -22,7 +22,7 @@ type Family = 'haiku' | 'sonnet' | 'opus' | 'fable'
 type Level = { model: string; effort: Effort; name: string }
 
 // Eight model·effort profiles, from cheapest to most capable, set against Anthropic's
-// documentation for the 5.5 models and checked by the author on 30 real requests:
+// documentation for the 5.5 models and Fable 5.2 and checked by the author on 30 real requests:
 // 24 exact, 28 within one profile. Effort max is left out: it costs a lot and adds little.
 const LEVELS: Record<number, Level> = {
   1: { model: 'claude-haiku-5-5', effort: 'low', name: 'Haiku 5.5 · low' },
@@ -32,7 +32,7 @@ const LEVELS: Record<number, Level> = {
   5: { model: 'claude-opus-5-5', effort: 'medium', name: 'Opus 5.5 · medium' },
   6: { model: 'claude-opus-5-5', effort: 'high', name: 'Opus 5.5 · high' },
   7: { model: 'claude-opus-5-5', effort: 'xhigh', name: 'Opus 5.5 · xhigh' },
-  8: { model: 'claude-fable-5-1', effort: 'high', name: 'Fable 5.1 · high' },
+  8: { model: 'claude-fable-5-2', effort: 'high', name: 'Fable 5.2 · high' },
 }
 
 const STRENGTH: Record<Family, number> = { haiku: 0, sonnet: 1, opus: 2, fable: 3 }
@@ -59,12 +59,12 @@ const TOP_EFFORT: Record<Family, Effort> = { haiku: 'high', sonnet: 'high', opus
 const GENERIC_SUBAGENTS = new Set(['general-purpose', 'Explore', 'Plan', 'claude'])
 
 // Prices and guidance from platform.claude.com/docs (pricing and effort pages),
-// checked on 26 October 2026. Update them here when Anthropic changes them.
-const FACTS = `Facts from Anthropic's documentation (October 2026), prices per million input/output tokens:
+// checked on 10 November 2026. Update them here when Anthropic changes them.
+const FACTS = `Facts from Anthropic's documentation (November 2026), prices per million input/output tokens:
 - Haiku 5.5: $0.10/$0.50 (prompts over 100K tokens: $0.50/$2.50). Default effort medium; low suits chat, short tool tasks and simple requests.
 - Sonnet 5.5: $2/$10. Default effort high. For agentic work, medium for well-specified tasks and high for harder or longer ones. For the hardest long-horizon work Anthropic points to Opus.
 - Opus 5.5: $4/$20, strongest at multistep agentic work in a real repository. Default effort medium; on several coding evaluations low comes close to it at much lower cost. xhigh is for long-running work (over 30 minutes).
-- Fable 5.1: $10/$50, the most capable model. Default effort high.
+- Fable 5.2: $8/$40, the most capable model. Default effort high; xhigh only where a gain has been measured.
 - xhigh and max only where they have been shown to help: thinking and replies get much longer.`
 
 const SCALE = `1 = Haiku 5.5 · low: greetings, small talk, thanks, questions about the conversation itself.
@@ -74,7 +74,7 @@ const SCALE = `1 = Haiku 5.5 · low: greetings, small talk, thanks, questions ab
 5 = Opus 5.5 · medium: work that needs judgment or touches things that are costly to get wrong: implementing a feature, writing new scripts, strategic advice, weighing options, operations on production projects (final audio or video, publishing, deploys, client accounts and data), configuration across several machines.
 6 = Opus 5.5 · high: diagnosing something that does not work, destructive or irreversible operations in production (deleting services, data, volumes), long creative or technical work to do well unattended, checks where a mistake is expensive.
 7 = Opus 5.5 · xhigh: very long autonomous work (over half an hour), several intermittent defects to understand together, ambiguous causes, architecture decisions, auditing a system.
-8 = Fable 5.1 · high: only when Opus xhigh has already failed or the reasoning is exceptionally hard (deep research, open problems). Never for ordinary work.`
+8 = Fable 5.2 · high: only when Opus xhigh has already failed or the reasoning is exceptionally hard (deep research, open problems). Never for ordinary work.`
 
 const FORMAT = `Answer ONLY with JSON, no other text: {"profile": <1-8>, "reason": "<at most 12 words>", "ultracode": <true|false>}`
 

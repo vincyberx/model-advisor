@@ -266,8 +266,8 @@ test('if the session changes model with /model, that choice wins', async ($, on)
   expect(seen.steps[0]?.model).toBe('claude-haiku-5-5')
 
   await request($, 'ok')
-  await step($, 't2', { model: 'claude-fable-5-1', effort: 'high' })
-  expect(seen.steps[1]).toEqual({ model: 'claude-fable-5-1', effort: 'high', agentId: undefined })
+  await step($, 't2', { model: 'claude-fable-5-2', effort: 'high' })
+  expect(seen.steps[1]).toEqual({ model: 'claude-fable-5-2', effort: 'high', agentId: undefined })
 })
 
 const COMPOSE = {

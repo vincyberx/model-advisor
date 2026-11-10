@@ -22,7 +22,7 @@ Before a request starts, the mod asks Sonnet 5.5 (at low effort) how much work t
 | 5 | Opus 5.5 · medium | work that needs judgment or is costly to get wrong: a new feature, new scripts, deploys, client data |
 | 6 | Opus 5.5 · high | diagnosing what's broken, irreversible operations in production, long work done unattended |
 | 7 | Opus 5.5 · xhigh | very long autonomous work, several intermittent defects, architecture decisions, audits |
-| 8 | Fable 5.1 · high | only when Opus xhigh has failed or the reasoning is exceptionally hard |
+| 8 | Fable 5.2 · high | only when Opus xhigh has failed or the reasoning is exceptionally hard |
 
 Effort `max` is left out on purpose: Anthropic's guidance is to use it only where it has been shown to help.
 
@@ -68,7 +68,7 @@ Each decision is a line in `~/.claude/mods/model-advisor/<session id>.jsonl` (or
 
 - **The mod API is early access.** Claude Code's function hooks may change between releases without notice, and the mod may stop working until it's updated.
 - **Managed organizations.** Where an organization manages Claude Code, the `prompt.compose`, `prompt.section` and `attribution.text` hooks don't run for plugins a person installs. Model and effort switching still work, but the model's name in the system prompt and in `Co-Authored-By` lines isn't corrected, and the main session gets no guidance on choosing subagent models.
-- **Model names, prices and the scale are written for the 5.5 models** (Haiku 5.5, Sonnet 5.5, Opus 5.5, Fable 5.1), as documented by Anthropic in October 2026. When Anthropic releases new models or changes prices, `LEVELS` and `FACTS` in `hooks/register.ts` need updating. Profiles that use a model your plan doesn't include won't work.
+- **Model names, prices and the scale are written for Haiku 5.5, Sonnet 5.5, Opus 5.5 and Fable 5.2**, as documented by Anthropic in November 2026. When Anthropic releases new models or changes prices, `LEVELS` and `FACTS` in `hooks/register.ts` need updating. Profiles that use a model your plan doesn't include won't work.
 - **The calibration is small.** The scale was checked by the author on 30 real requests (24 exact, 28 within one profile) and in a few days of everyday use. That's evidence it works for one person's work, not a benchmark. The classifier is itself a language model and can misjudge a request. How profiles map onto a stronger model's effort (for example, Opus at low effort covering the Sonnet profiles) is a judgment call, not a measurement.
 - **It only acts when someone is watching.** In non-interactive runs (`claude -p`, SDK hosts with no surface) it does nothing, since there's nobody to ask.
 - **Confirmations are recognised from a word list**: English, plus a few common Italian, Spanish, French and German words. A confirmation in another language is assessed like any request, which costs one classifier call and changes nothing else.

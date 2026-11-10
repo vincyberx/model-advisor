@@ -1,6 +1,6 @@
 {
   "name": "model-advisor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Picks model and effort for each Claude Code request from 8 profiles (Haiku, Sonnet, Opus, Fable): adjusts effort on its own, asks only before switching to a stronger model, logs every decision",
   "types": "./types/index.d.ts",
   "author": {
