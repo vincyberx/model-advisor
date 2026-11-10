@@ -20,11 +20,13 @@ const MAX_SUBAGENT_LEVEL = 6
 
 type Family = 'haiku' | 'sonnet' | 'opus' | 'fable'
 type Level = { model: string; effort: Effort; name: string }
+type Lang = 'en' | 'it'
+type Kind = 'request' | 'subagent'
 
 // Eight model·effort profiles, from cheapest to most capable, set against Anthropic's
 // documentation for the 5.5 models and Fable 5.2 and checked by the author on 30 real requests:
 // 24 exact, 28 within one profile. Effort max is left out: it costs a lot and adds little.
-const LEVELS: Record<number, Level> = {
+export const LEVELS: Record<number, Level> = {
   1: { model: 'claude-haiku-5-5', effort: 'low', name: 'Haiku 5.5 · low' },
   2: { model: 'claude-haiku-5-5', effort: 'medium', name: 'Haiku 5.5 · medium' },
   3: { model: 'claude-sonnet-5-5', effort: 'medium', name: 'Sonnet 5.5 · medium' },
@@ -59,61 +61,258 @@ const TOP_EFFORT: Record<Family, Effort> = { haiku: 'high', sonnet: 'high', opus
 const GENERIC_SUBAGENTS = new Set(['general-purpose', 'Explore', 'Plan', 'claude'])
 
 // Prices and guidance from platform.claude.com/docs (pricing and effort pages),
-// checked on 10 November 2026. Update them here when Anthropic changes them.
-const FACTS = `Facts from Anthropic's documentation (November 2026), prices per million input/output tokens:
+// checked on 10 November 2026. Update them here, in both languages, when Anthropic changes them.
+const FACTS: Record<Lang, string> = {
+  en: `Facts from Anthropic's documentation (November 2026), prices per million input/output tokens:
 - Haiku 5.5: $0.10/$0.50 (prompts over 100K tokens: $0.50/$2.50). Default effort medium; low suits chat, short tool tasks and simple requests.
 - Sonnet 5.5: $2/$10. Default effort high. For agentic work, medium for well-specified tasks and high for harder or longer ones. For the hardest long-horizon work Anthropic points to Opus.
 - Opus 5.5: $4/$20, strongest at multistep agentic work in a real repository. Default effort medium; on several coding evaluations low comes close to it at much lower cost. xhigh is for long-running work (over 30 minutes).
 - Fable 5.2: $8/$40, the most capable model. Default effort high; xhigh only where a gain has been measured.
-- xhigh and max only where they have been shown to help: thinking and replies get much longer.`
+- xhigh and max only where they have been shown to help: thinking and replies get much longer.`,
+  it: `Fatti dalla documentazione Anthropic (novembre 2026), prezzi per milione di token ingresso/uscita:
+- Haiku 5.5: 0,10/0,50 $ (prompt oltre 100K token: 0,50/2,50). Effort predefinito medium; low va bene per chiacchiera, compiti brevi con strumenti e richieste semplici.
+- Sonnet 5.5: 2/10 $. Effort predefinito high. Nel lavoro agentico, medium per i compiti ben definiti e high per quelli più difficili o lunghi. Per il lavoro lungo e più difficile Anthropic indica Opus.
+- Opus 5.5: 4/20 $, il più forte nel lavoro agentico a più passi in un repository vero. Effort predefinito medium; in diverse valutazioni di coding low ci si avvicina a un costo molto più basso. xhigh è per il lavoro lungo (oltre 30 minuti).
+- Fable 5.2: 8/40 $, il più capace. Effort predefinito high; xhigh solo dove il guadagno è misurato.
+- xhigh e max solo dove hanno dimostrato di servire: ragionamento e risposte diventano molto più lunghi.`,
+}
 
-const SCALE = `1 = Haiku 5.5 · low: greetings, small talk, thanks, questions about the conversation itself.
+// The Italian scale is the one the 30 requests were measured on; a test holds the two
+// to the same eight profiles.
+export const SCALE: Record<Lang, string> = {
+  en: `1 = Haiku 5.5 · low: greetings, small talk, thanks, questions about the conversation itself.
 2 = Haiku 5.5 · medium: reading one fact or running one command and reporting it (disk space, a version, a service's status), summarising what was already said.
 3 = Sonnet 5.5 · medium: mechanical steps with a known, already-decided procedure: commit and push files that are ready, add a line, rename, run an existing script.
 4 = Sonnet 5.5 · high: everyday work with a clear scope that needs some writing or reasoning: update a note or document with content to synthesise, a small local configuration change, reorganise files with checks, answer a technical question by searching the project.
 5 = Opus 5.5 · medium: work that needs judgment or touches things that are costly to get wrong: implementing a feature, writing new scripts, strategic advice, weighing options, operations on production projects (final audio or video, publishing, deploys, client accounts and data), configuration across several machines.
 6 = Opus 5.5 · high: diagnosing something that does not work, destructive or irreversible operations in production (deleting services, data, volumes), long creative or technical work to do well unattended, checks where a mistake is expensive.
 7 = Opus 5.5 · xhigh: very long autonomous work (over half an hour), several intermittent defects to understand together, ambiguous causes, architecture decisions, auditing a system.
-8 = Fable 5.2 · high: only when Opus xhigh has already failed or the reasoning is exceptionally hard (deep research, open problems). Never for ordinary work.`
+8 = Fable 5.2 · high: only when Opus xhigh has already failed or the reasoning is exceptionally hard (deep research, open problems). Never for ordinary work.`,
+  it: `1 = Haiku 5.5 · low: saluti, chiacchiera, ringraziamenti, domande sulla conversazione stessa.
+2 = Haiku 5.5 · medium: un fatto da leggere o un comando da lanciare e riferire (spazio su disco, che versione è, stato di un servizio), un riassunto di cose già dette.
+3 = Sonnet 5.5 · medium: operazioni meccaniche con procedura nota e già decisa: commit e push di file pronti, aggiungere una riga, rinominare, lanciare uno script esistente.
+4 = Sonnet 5.5 · high: lavoro quotidiano con perimetro chiaro che chiede di scrivere o ragionare un po': aggiornare una nota o un documento con contenuto da sintetizzare, una piccola modifica di configurazione locale, riordinare file con verifiche, rispondere a una domanda tecnica cercando nel progetto.
+5 = Opus 5.5 · medium: lavoro che chiede giudizio o tocca cose che costano se sbagliate: implementare una funzionalità, scrivere script nuovi, consigli strategici, valutare opzioni, operazioni su progetti in produzione (audio o video definitivi, pubblicazioni, deploy, account e dati dei clienti), configurazioni su più macchine.
+6 = Opus 5.5 · high: diagnosi di qualcosa che non funziona, operazioni distruttive o irreversibili in produzione (cancellare servizi, dati, volumi), lavori creativi o tecnici lunghi da fare bene in autonomia, verifiche dove un errore costa caro.
+7 = Opus 5.5 · xhigh: lavori autonomi molto lunghi (oltre mezz'ora), più difetti intermittenti da capire insieme, cause ambigue, decisioni di architettura, audit di un sistema.
+8 = Fable 5.2 · high: solo quando anche Opus xhigh ha fallito o il ragionamento è eccezionalmente difficile (ricerca profonda, problemi aperti). Mai per lavoro ordinario.`,
+}
 
-const FORMAT = `Answer ONLY with JSON, no other text: {"profile": <1-8>, "reason": "<at most 12 words>", "ultracode": <true|false>}`
+const FORMAT: Record<Lang, string> = {
+  en: `Answer ONLY with JSON, no other text: {"profile": <1-8>, "reason": "<at most 12 words>", "ultracode": <true|false>}`,
+  it: `Rispondi SOLO con JSON, senza altro testo: {"profilo": <1-8>, "motivo": "<massimo 12 parole>", "ultracode": <true|false>}`,
+}
 
-const INSTRUCTIONS = `You advise Claude Code on model and effort. Claude Code is the assistant that works on the user's machines with a shell, files, git, the web and connected tools. You receive the request the user is about to send, with an excerpt of what was happening before. Pick the CHEAPEST profile that does the job right the first time: redoing botched work costs more than the right model.
+// `own` is the person's note about their work (the `context` option), or nothing.
+const INSTRUCTIONS: Record<Lang, (own: string) => string> = {
+  en: own => `You advise Claude Code on model and effort. Claude Code is the assistant that works on the user's machines with a shell, files, git, the web and connected tools. You receive the request the user is about to send, with an excerpt of what was happening before. Pick the CHEAPEST profile that does the job right the first time: redoing botched work costs more than the right model.
 
-${FACTS}
+${FACTS.en}
 
 The profiles:
-${SCALE}
-
+${SCALE.en}
+${own}
 Rules:
 - Judge the work the request sets in motion, not the length of the text: "ok go ahead" weighs as much as the work proposed just before it in the excerpt.
 - Requests can be in any language, often typed in a hurry and with typos.
 - "ultracode": true only if the request asks for an audit or a broad review of a whole system or repository, where several agents in parallel are needed; otherwise false.
 
-${FORMAT}`
+${FORMAT.en}`,
+  it: own => `Sei il consigliere di modello ed effort per Claude Code, l'assistente che lavora sulle macchine dell'utente con shell, file, git, web e strumenti collegati. Ricevi la richiesta che l'utente sta per mandare, con un estratto di cosa stava succedendo prima. Scegli il profilo PIÙ ECONOMICO che fa bene il lavoro al primo colpo: rifare un lavoro rovinato costa più del modello giusto.
 
-const SUBAGENT_INSTRUCTIONS = `You advise Claude Code on model and effort. You receive the brief a Claude Code session wrote for a subagent: a self-contained assignment the subagent carries out without seeing the conversation it comes from. Estimate only the work the brief describes and pick the CHEAPEST profile that does it right the first time. Searching, reading and listing files is cheap even when the brief is long; what counts is the judgment required and how much a mistake costs.
+${FACTS.it}
 
-${FACTS}
+I profili:
+${SCALE.it}
+${own}
+Regole:
+- Giudica il lavoro che la richiesta mette in moto, non la lunghezza del testo: "ok procedi" vale quanto il lavoro proposto subito prima nell'estratto.
+- Le richieste possono essere in qualsiasi lingua, spesso scritte in fretta e con refusi.
+- "ultracode": true solo se la richiesta chiede un audit o una revisione ampia di un intero sistema o repo, dove servono più agenti in parallelo; altrimenti false.
+
+${FORMAT.it}`,
+}
+
+const SUBAGENT_INSTRUCTIONS: Record<Lang, (own: string) => string> = {
+  en: own => `You advise Claude Code on model and effort. You receive the brief a Claude Code session wrote for a subagent: a self-contained assignment the subagent carries out without seeing the conversation it comes from. Estimate only the work the brief describes and pick the CHEAPEST profile that does it right the first time. Searching, reading and listing files is cheap even when the brief is long; what counts is the judgment required and how much a mistake costs.
+
+${FACTS.en}
 
 The profiles:
-${SCALE}
-
+${SCALE.en}
+${own}
 "ultracode" is always false for a subagent.
-${FORMAT}`
+${FORMAT.en}`,
+  it: own => `Sei il consigliere di modello ed effort per Claude Code. Ricevi il brief che una sessione di Claude Code ha scritto per un sotto-agente: un incarico autonomo, che il sotto-agente esegue senza vedere la conversazione da cui nasce. Stima solo il lavoro descritto nel brief e scegli il profilo PIÙ ECONOMICO che lo fa bene al primo colpo. Cercare, leggere ed elencare file costa poco anche quando il brief è lungo; contano il giudizio richiesto e quanto costa un errore.
+
+${FACTS.it}
+
+I profili:
+${SCALE.it}
+${own}
+"ultracode" è sempre false per un sotto-agente.
+${FORMAT.it}`,
+}
 
 // At the top of the main session's prompt: whoever orchestrates knows the work it
 // delegates better than any classifier, so it picks the model itself.
-const ORCHESTRATOR_GUIDE = `# Model for subagents and sessions
-When you launch a generic subagent (Agent tool) or start a session (start_session), choose the model yourself with the \`model\` parameter, based on the work you hand over: Haiku to search, read, list and summarise; Sonnet for work with a clear scope; Opus for judgment, implementation, diagnosis and production operations. Take the cheapest one that does the job right the first time. The subagent's effort is set by the model-advisor mod.`
+const ORCHESTRATOR_GUIDE: Record<Lang, string> = {
+  en: `# Model for subagents and sessions
+When you launch a generic subagent (Agent tool) or start a session (start_session), choose the model yourself with the \`model\` parameter, based on the work you hand over: Haiku to search, read, list and summarise; Sonnet for work with a clear scope; Opus for judgment, implementation, diagnosis and production operations. Take the cheapest one that does the job right the first time. The subagent's effort is set by the model-advisor mod.`,
+  it: `# Modello per sotto-agenti e sessioni
+Quando lanci un sotto-agente generico (tool Agent) o avvii una sessione (start_session), scegli tu il modello con il parametro \`model\`, in base al lavoro che affidi: Haiku per cercare, leggere, elencare e riassumere; Sonnet per lavoro con perimetro chiaro; Opus per giudizio, implementazione, diagnosi e operazioni in produzione. Prendi il più economico che fa bene il lavoro al primo colpo. L'effort del sotto-agente lo regola il mod model-advisor.`,
+}
+
+// Who chose a subagent's model, as the log records it.
+const BY_SESSION = 'model chosen by the session'
+const BY_MOD = 'chosen by the mod'
+
+// What the mod says around the request to the classifier, to the model in use and to
+// the person. The log's outcomes stay in English in both languages, so one script reads them.
+type Texts = {
+  own: string
+  before: (excerpt: string) => string
+  previous: (level: number) => string
+  request: string
+  brief: string
+  modelNote: (name: string, id: string, effort: Effort) => string
+  status: (name: string) => string
+  recommend: (name: string, reason: string) => string
+  stronger: (name: string, reason: string, cost: string) => string
+  cheap: string
+  reread: (thousands: number) => string
+  which: string
+  header: string
+  take: (name: string) => string
+  alternative: (name: string) => string
+  keep: (name: string) => string
+  stop: string
+  stopped: string
+  ultracode: string
+  subagent: (description: string, name: string, bySession: boolean, reason: string) => string
+  command: string
+  off: string
+  on: string
+  reset: string
+  state: (state: 'mods' | 'off' | 'on', level: string | null, log: string) => string
+}
+
+const TEXTS: Record<Lang, Texts> = {
+  en: {
+    own: 'A note from the person using Claude Code about their own work and tools:',
+    before: excerpt => `Excerpt of what was happening before (end of the assistant's last reply):\n«${excerpt}»\n\n`,
+    previous: level => `The previous request was profile ${level}: take it into account only if this one continues it.\n\n`,
+    request: "The user's request",
+    brief: "The subagent's brief",
+    modelNote: (name, id, effort) =>
+      `The model-advisor mod, installed by the user, picked the model for this request: ` +
+      `it runs on ${name} (ID ${id}), effort ${effort}. The system prompt still names ` +
+      `the session's model because it was composed before the choice; it updates from the next turn. ` +
+      `For the model's name and for Co-Authored-By lines, this note applies.`,
+    status: name => `Level: ${name}`,
+    recommend: (name, reason) => `For this request I recommend ${name}${reason}.`,
+    stronger: (name, reason, cost) => `This request needs a stronger model: I recommend ${name}${reason}. ${cost}`,
+    cheap: 'The conversation is still short: switching now is cheap.',
+    reread: thousands =>
+      `Switching models now makes Claude re-read the whole conversation (about ${thousands}k tokens) without the cache.`,
+    which: 'Which one?',
+    header: 'Level',
+    take: name => `${name} (recommended)`,
+    alternative: name => `${name} (same model)`,
+    keep: name => `Keep ${name}`,
+    stop: 'Stop asking in this session',
+    stopped: 'Advice off for this session: /model-advisor on turns it back on',
+    ultracode: 'For an audit this broad, ultracode helps: add it to the request to work with several agents.',
+    subagent: (description, name, bySession, reason) =>
+      `subagent «${description}» on ${name}, ${bySession ? BY_SESSION : BY_MOD}${reason}`,
+    command: 'Model and effort advice: on, off, reset (back to the session level)',
+    off: 'Advice off for this session.',
+    on: 'Advice on: I set the effort myself and ask only to switch models.',
+    reset: "Back to the session's model and effort.",
+    state: (state, level, log) =>
+      `Advice ${{ mods: 'off from /mods', off: 'off', on: 'on' }[state]}. Level in use: ${level ?? "the session's"}. Commands: /model-advisor on | off | reset. To skip one request, start it with ~. Decision log: ${log}`,
+  },
+  it: {
+    own: 'Nota di chi usa Claude Code sul proprio lavoro e i propri strumenti:',
+    before: excerpt => `Estratto di cosa succedeva prima (fine dell'ultima risposta dell'assistente):\n«${excerpt}»\n\n`,
+    previous: level => `La richiesta precedente era di profilo ${level}: tienine conto solo se questa la continua.\n\n`,
+    request: "Richiesta dell'utente",
+    brief: 'Brief del sotto-agente',
+    modelNote: (name, id, effort) =>
+      `Il mod model-advisor, installato dall'utente, ha scelto il modello per questa richiesta: ` +
+      `gira su ${name} (ID ${id}), effort ${effort}. Il prompt di sistema nomina ancora ` +
+      `il modello della sessione perché è stato composto prima della scelta; si aggiorna dal turno successivo. ` +
+      `Per il nome del modello e per le righe Co-Authored-By vale questa nota.`,
+    status: name => `Livello: ${name}`,
+    recommend: (name, reason) => `Per questa richiesta consiglio ${name}${reason}.`,
+    stronger: (name, reason, cost) =>
+      `Per questa richiesta serve un modello più forte: consiglio ${name}${reason}. ${cost}`,
+    cheap: 'La conversazione è ancora corta: cambiare adesso costa poco.',
+    reread: thousands =>
+      `Cambiare modello adesso fa rileggere tutta la conversazione (circa ${thousands}k token) senza cache.`,
+    which: 'Quale uso?',
+    header: 'Livello',
+    take: name => `${name} (consigliato)`,
+    alternative: name => `${name} (stesso modello)`,
+    keep: name => `Tieni ${name}`,
+    stop: 'Non chiedere più qui',
+    stopped: 'Consigli spenti per questa sessione: /model-advisor on per riaccenderli',
+    ultracode: 'Per un audit così ampio conviene ultracode: aggiungilo alla richiesta per lavorare con più agenti.',
+    subagent: (description, name, bySession, reason) =>
+      `sotto-agente «${description}» su ${name}, ${bySession ? 'modello scelto dalla sessione' : 'scelto dal mod'}${reason}`,
+    command: 'Consiglio di modello ed effort: on, off, reset (torna al livello della sessione)',
+    off: 'Consigli spenti per questa sessione.',
+    on: "Consigli accesi: regolo l'effort da solo e chiedo solo per cambiare modello.",
+    reset: "Torno al modello e all'effort della sessione.",
+    state: (state, level, log) =>
+      `Consigli ${{ mods: 'spenti da /mods', off: 'spenti', on: 'accesi' }[state]}. Livello in uso: ${level ?? 'quello della sessione'}. Comandi: /model-advisor on | off | reset. Per saltare una richiesta, iniziala con ~. Registro delle decisioni: ${log}`,
+  },
+}
+
+// The person's note reaches the classifier on every request: this caps what it costs.
+const OWN_CONTEXT_MAX = 1000
+
+// The options, as this activation received them. With "auto" the texts follow the
+// language Claude Code is set to (the `language` row of /config): Italian, or English.
+let languageOption = 'auto'
+let language: Lang | null = null
+let ownContext = ''
+
+export function isItalian(value: unknown): boolean {
+  return typeof value === 'string' && /^(it|it[-_].*|ital.*)$/i.test(value.trim())
+}
+
+async function lang($: EngineInterface): Promise<Lang> {
+  if (language !== null) {
+    return language
+  }
+  if (languageOption === 'it' || languageOption === 'en') {
+    language = languageOption
+
+    return language
+  }
+  try {
+    const row = (await $.config.list()).find(r => r.key === 'language')
+    language = isItalian(row?.value) ? 'it' : 'en'
+
+    return language
+  } catch {
+    return 'en' // not kept: the next request asks again
+  }
+}
 
 // A short confirmation continues the work already under way: it keeps the level in use.
 const CONFIRMATION_WORDS = new Set([
   'ok', 'okay', 'k', 'yes', 'yep', 'yeah', 'sure', 'right', 'exactly', 'confirmed', 'agreed',
   'go', 'ahead', 'on', 'proceed', 'continue', 'carry', 'do', 'it', 'please', 'fine', 'good',
   'great', 'perfect', 'thanks', 'thank', 'you', 'done', 'all', 'and', 'then', 'that', 'sounds',
-  // Italian, Spanish, French, German
-  'si', 'sì', 'sí', 'procedi', 'vai', 'perfetto', 'grazie', 'oui', 'merci', 'vas-y', 'ja', 'danke',
+  // Italian
+  'oki', 'okk', 'si', 'sì', 'certo', 'esatto', 'giusto', 'confermo', 'procedi', 'procediamo',
+  'prosegui', 'proseguiamo', 'continua', 'continuiamo', 'avanti', 'vai', 'va', 'bene', 'benissimo',
+  'perfetto', 'ottimo', 'top', 'fatto', 'fai', 'pure', 'chiudi', 'chiudiamo', 'tutto', 'tu',
+  'allora', 'e', 'dai', 'grazie', "d'accordo", 'daccordo',
+  // Spanish, French, German
+  'sí', 'oui', 'merci', 'vas-y', 'ja', 'danke',
 ])
 
 type Advice = { level: number; reason: string; ultracode?: boolean }
@@ -136,12 +335,14 @@ export function parseAdvice(answer: string): Advice | null {
   }
   try {
     const j = JSON.parse(answer.slice(start, end + 1))
-    const level = Number(j.profile ?? j.level)
+    const level = Number(j.profile ?? j.profilo ?? j.level)
     if (!Number.isInteger(level) || !LEVELS[level]) {
       return null
     }
 
-    return { level, reason: typeof j.reason === 'string' ? j.reason.trim() : '', ultracode: j.ultracode === true }
+    const reason = j.reason ?? j.motivo
+
+    return { level, reason: typeof reason === 'string' ? reason.trim() : '', ultracode: j.ultracode === true }
   } catch {
     return null
   }
@@ -203,18 +404,19 @@ export function propose(level: number, modelInUse: string, firstRequest: boolean
 async function assess(
   $: EngineInterface,
   text: string,
+  kind: Kind,
   previous: number | null = null,
-  instructions = INSTRUCTIONS,
   before = '',
 ): Promise<Advice | null> {
-  const context =
-    (before ? `Excerpt of what was happening before (end of the assistant's last reply):\n«${before}»\n\n` : '') +
-    (previous === null ? '' : `The previous request was profile ${previous}: take it into account only if this one continues it.\n\n`)
+  const l = await lang($)
+  const t = TEXTS[l]
+  const own = ownContext ? `\n${t.own}\n${ownContext}\n` : ''
+  const context = (before ? t.before(before) : '') + (previous === null ? '' : t.previous(previous))
   try {
     const r = await $.model.complete({
       model: 'sonnet',
-      system: instructions,
-      prompt: `${context}${instructions === INSTRUCTIONS ? "The user's request" : "The subagent's brief"}:\n"""\n${text.slice(0, 1500)}\n"""`,
+      system: (kind === 'request' ? INSTRUCTIONS : SUBAGENT_INSTRUCTIONS)[l](own),
+      prompt: `${context}${kind === 'request' ? t.request : t.brief}:\n"""\n${text.slice(0, 1500)}\n"""`,
       effort: 'low',
       maxTokens: 300,
       timeoutMs: 20_000,
@@ -264,7 +466,7 @@ async function apply(
   const asSession = sameModel(chosen.model, sessionModel) && chosen.effort === sessionEffort
   const next: Choice | null = asSession ? null : { level, ...chosen, sessionModel, sessionEffort }
   await update($, choice, () => next)
-  $.ui.status(next ? `Level: ${next.name}` : undefined)
+  $.ui.status(next ? TEXTS[await lang($)].status(next.name) : undefined)
   if ((before?.model ?? sessionModel) !== (next?.model ?? sessionModel)) {
     // The model's name sits in a system prompt section: from the next turn prompt.section rewrites it.
     $.ui.invalidate('prompt.section')
@@ -281,13 +483,8 @@ function modelChanged(c: Choice | null): c is Choice {
 
 // This turn's system prompt is already composed and names the session's model:
 // without an explanation the model trusts the prompt.
-function modelNote(c: Choice): string {
-  return (
-    `The model-advisor mod, installed by the user, picked the model for this request: ` +
-    `it runs on ${modelName(c.model)} (ID ${c.model}), effort ${c.effort}. The system prompt still names ` +
-    `the session's model because it was composed before the choice; it updates from the next turn. ` +
-    `For the model's name and for Co-Authored-By lines, this note applies.`
-  )
+function modelNote(c: Choice, l: Lang): string {
+  return TEXTS[l].modelNote(modelName(c.model), c.model, c.effort)
 }
 
 export function effortOn(model: string, level: number): Effort {
@@ -385,26 +582,24 @@ async function decide(
     return `auto: ${levelName(inUse.model, inUse.effort)} → ${p.recommended.name}`
   }
 
+  const t = TEXTS[await lang($)]
   const reason = inParens(advice.reason)
-  let question = `For this request I recommend ${p.recommended.name}${reason}.`
+  let question = t.recommend(p.recommended.name, reason)
   if (p.switchesModel) {
     const context = (await $.session.usage()).context.tokens ?? 0
-    const cost =
-      context < SMALL_CONTEXT
-        ? 'The conversation is still short: switching now is cheap.'
-        : `Switching models now makes Claude re-read the whole conversation (about ${Math.round(context / 1000)}k tokens) without the cache.`
-    question = `This request needs a stronger model: I recommend ${p.recommended.name}${reason}. ${cost}`
+    const cost = context < SMALL_CONTEXT ? t.cheap : t.reread(Math.round(context / 1000))
+    question = t.stronger(p.recommended.name, reason, cost)
   }
 
-  const take = `${p.recommended.name} (recommended)`
-  const alternative = p.alternative ? `${p.alternative.name} (same model)` : null
-  const keep = `Keep ${levelName(inUse.model, inUse.effort)}`
-  const stop = 'Stop asking in this session'
+  const take = t.take(p.recommended.name)
+  const alternative = p.alternative ? t.alternative(p.alternative.name) : null
+  const keep = t.keep(levelName(inUse.model, inUse.effort))
+  const stop = t.stop
   const options = [take, ...(alternative ? [alternative] : []), keep, stop]
 
   let answer: string
   try {
-    answer = await $.ui.ask(`${question} Which one?`, { options, header: 'Level' })
+    answer = await $.ui.ask(`${question} ${t.which}`, { options, header: t.header })
   } catch {
     return `question for ${p.recommended.name} closed unanswered: stays on ${levelName(inUse.model, inUse.effort)}`
   }
@@ -417,7 +612,7 @@ async function decide(
   }
   if (answer === stop) {
     await update($, disabled, () => true)
-    $.ui.toast('Advice off for this session: /model-advisor on turns it back on')
+    $.ui.toast(t.stopped)
 
     return `question for ${p.recommended.name}: advice turned off`
   }
@@ -454,30 +649,35 @@ async function record(
   }
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  languageOption = String(options.language ?? 'auto')
+  language = null
+  ownContext = String(options.context ?? '').trim().slice(0, OWN_CONTEXT_MAX)
+
   // The effort chosen for each subagent, applied to each of its steps.
   const subagentEffort = new Map<string, Effort>()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'model-advisor',
-      description: 'Model and effort advice: on, off, reset (back to the session level)',
+      description: TEXTS[await lang($)].command,
     })
 
     return next(e)
   })
 
   on('command.run', { command: 'model-advisor' }, async ($, e) => {
+    const t = TEXTS[await lang($)]
     const arg = e.args.trim().toLowerCase()
     if (arg === 'off') {
       await update($, disabled, () => true)
 
-      return { text: 'Advice off for this session.' }
+      return { text: t.off }
     }
     if (arg === 'on') {
       await update($, disabled, () => false)
 
-      return { text: 'Advice on: I set the effort myself and ask only to switch models.' }
+      return { text: t.on }
     }
     if (arg === 'reset') {
       const c = await read($, choice)
@@ -487,14 +687,13 @@ export const register: Register = on => {
         $.ui.invalidate('prompt.section')
       }
 
-      return { text: "Back to the session's model and effort." }
+      return { text: t.reset }
     }
     const c = await read($, choice)
-    const state = (await offInMods($)) ? 'off from /mods' : (await read($, disabled)) ? 'off' : 'on'
+    const state = (await offInMods($)) ? 'mods' : (await read($, disabled)) ? 'off' : 'on'
+    const log = `${await claudeDir($)}/mods/model-advisor/${await $.session.id()}.jsonl`
 
-    return {
-      text: `Advice ${state}. Level in use: ${c ? c.name : "the session's"}. Commands: /model-advisor on | off | reset. To skip one request, start it with ~. Decision log: ${await claudeDir($)}/mods/model-advisor/${await $.session.id()}.jsonl`,
-    }
+    return { text: t.state(state, c ? c.name : null, log) }
   })
 
   on('prompt.submit', async ($, e, next) => {
@@ -526,9 +725,9 @@ export const register: Register = on => {
     // The "first request" is the first one that brings work: opening greetings do not count.
     const firstRequest = undecided && (await $.session.turns()) <= (await read($, openers))
     const before = await read($, choice)
-    const advice = await assess($, text, await read($, lastLevel), INSTRUCTIONS, await lastReply($))
+    const advice = await assess($, text, 'request', await read($, lastLevel), await lastReply($))
     if (advice?.ultracode && !/ultracode/i.test(text)) {
-      $.ui.toast('For an audit this broad, ultracode helps: add it to the request to work with several agents.')
+      $.ui.toast(TEXTS[await lang($)].ultracode)
     }
     const outcome = advice
       ? await decide($, advice, firstRequest, await $.session.model(), await read($, seenEffort))
@@ -542,7 +741,7 @@ export const register: Register = on => {
     })
     const after = await read($, choice)
     if (modelChanged(after) && after.model !== before?.model) {
-      return next({ ...e, context: [...(e.context ?? []), modelNote(after)] })
+      return next({ ...e, context: [...(e.context ?? []), modelNote(after, await lang($))] })
     }
 
     return next(e)
@@ -554,7 +753,7 @@ export const register: Register = on => {
       return r
     }
 
-    return { sections: [...r.sections, { id: 'model-advisor:orchestrate', text: ORCHESTRATOR_GUIDE, scope: 'session' }] }
+    return { sections: [...r.sections, { id: 'model-advisor:orchestrate', text: ORCHESTRATOR_GUIDE[await lang($)], scope: 'session' }] }
   }).catch((_, e, next) => next(e))
 
   on('prompt.section', { name: 'env_info_model' }, async ($, e, next) => {
@@ -584,7 +783,7 @@ export const register: Register = on => {
     if (!generic || !(await someoneWatching($))) {
       return next(e) // a type with its own model, or nobody watching
     }
-    const advice = await assess($, e.prompt, null, SUBAGENT_INSTRUCTIONS)
+    const advice = await assess($, e.prompt, 'subagent')
     if (!advice) {
       return next(e)
     }
@@ -600,14 +799,14 @@ export const register: Register = on => {
     const started = await next(e.model ? e : { ...e, model })
     if (!started.deny && started.agentId) {
       subagentEffort.set(started.agentId, effort)
-      const who = e.model ? 'model chosen by the session' : 'chosen by the mod'
-      $.ui.log(`subagent «${e.description}» on ${levelName(model, effort)}, ${who}${inParens(advice.reason)}`)
+      const reason = inParens(advice.reason)
+      $.ui.log(TEXTS[await lang($)].subagent(e.description, levelName(model, effort), !!e.model, reason))
       await record($, {
         kind: 'subagent',
         text: `${e.description}: ${e.prompt}`,
         level: advice.level,
         reason: advice.reason,
-        outcome: `${levelName(model, effort)}, ${who}`,
+        outcome: `${levelName(model, effort)}, ${e.model ? BY_SESSION : BY_MOD}`,
       })
     }
 

@@ -58,9 +58,20 @@ Choosing a model with `/model` or an effort with `/effort` always wins: the mod 
 
 Each decision is a line in `~/.claude/mods/model-advisor/<session id>.jsonl` (or under `$CLAUDE_CONFIG_DIR` if you set it), with the time, the folder, the first 160 characters of the request, the profile, the reason and what happened.
 
+## Options
+
+Both are in `/config`, under the mod's name. Changing one reloads the mod.
+
+| Option | Values | What it does |
+| --- | --- | --- |
+| Language | `auto` (default), `en`, `it` | The language of the mod's questions and messages and of the classifier's instructions. With `auto` it follows the language Claude Code is set to: Italian if that is Italian, English otherwise. |
+| Your work and tools | free text, empty by default | A few lines about the work you do and the tools you use, given to the classifier with every request so it weighs your requests better. For example: "I edit video in Resolve and deploy on Railway; a final render is production work." At most 1,000 characters. It stays in your settings. |
+
+The log's field names and outcomes are in English in both languages; the reason is in the classifier's language.
+
 ## What it costs
 
-- **One extra model call per request you type, and one per generic subagent.** The call goes to Sonnet 5.5 at low effort with about 1,000 tokens of instructions, plus up to 1,500 characters of your request and 800 characters of the previous reply, and at most 300 output tokens. At API prices ($2 / $10 per million input/output tokens) that is roughly $0.003–0.006 per request. That figure is an estimate from the prompt's length, not a measurement. On a Claude subscription it counts toward your usage limits instead.
+- **One extra model call per request you type, and one per generic subagent.** The call goes to Sonnet 5.5 at low effort with about 1,000 tokens of instructions, plus up to 1,500 characters of your request, 800 characters of the previous reply and your note about your work if you set one, and at most 300 output tokens. At API prices ($2 / $10 per million input/output tokens) that is roughly $0.003–0.006 per request. That figure is an estimate from the prompt's length, not a measurement. On a Claude subscription it counts toward your usage limits instead.
 - **A short wait before each request starts**, while the classifier answers: usually a few seconds, never more than 20. If it times out or fails, the request goes through unchanged.
 - **Switching models mid-session re-reads the conversation without the cache.** That's why the mod asks first and shows the size of the conversation. Changing effort on the same model doesn't do this, so the mod does it without asking.
 
@@ -68,10 +79,11 @@ Each decision is a line in `~/.claude/mods/model-advisor/<session id>.jsonl` (or
 
 - **The mod API is early access.** Claude Code's function hooks may change between releases without notice, and the mod may stop working until it's updated.
 - **Managed organizations.** Where an organization manages Claude Code, the `prompt.compose`, `prompt.section` and `attribution.text` hooks don't run for plugins a person installs. Model and effort switching still work, but the model's name in the system prompt and in `Co-Authored-By` lines isn't corrected, and the main session gets no guidance on choosing subagent models.
-- **Model names, prices and the scale are written for Haiku 5.5, Sonnet 5.5, Opus 5.5 and Fable 5.2**, as documented by Anthropic in November 2026. When Anthropic releases new models or changes prices, `LEVELS` and `FACTS` in `hooks/register.ts` need updating. Profiles that use a model your plan doesn't include won't work.
-- **The calibration is small.** The scale was checked by the author on 30 real requests (24 exact, 28 within one profile) and in a few days of everyday use. That's evidence it works for one person's work, not a benchmark. The classifier is itself a language model and can misjudge a request. How profiles map onto a stronger model's effort (for example, Opus at low effort covering the Sonnet profiles) is a judgment call, not a measurement.
+- **Model names, prices and the scale are written for Haiku 5.5, Sonnet 5.5, Opus 5.5 and Fable 5.2**, as documented by Anthropic in November 2026. When Anthropic releases new models or changes prices, `LEVELS`, and `FACTS` and `SCALE` in both languages, need updating in `hooks/register.ts`. Profiles that use a model your plan doesn't include won't work.
+- **The calibration is small.** The scale was checked by the author on 30 real requests (24 exact, 28 within one profile) and in a few days of everyday use. Those requests were in Italian, with the Italian instructions; the English instructions are their translation and were not measured separately. That's evidence it works for one person's work, not a benchmark. The classifier is itself a language model and can misjudge a request. How profiles map onto a stronger model's effort (for example, Opus at low effort covering the Sonnet profiles) is a judgment call, not a measurement.
 - **It only acts when someone is watching.** In non-interactive runs (`claude -p`, SDK hosts with no surface) it does nothing, since there's nobody to ask.
-- **Confirmations are recognised from a word list**: English, plus a few common Italian, Spanish, French and German words. A confirmation in another language is assessed like any request, which costs one classifier call and changes nothing else.
+- **Two languages.** The mod speaks English and Italian. Requests can be in any language, but the questions it asks are in one of those two.
+- **Confirmations are recognised from a word list**: English and Italian, plus a few common Spanish, French and German words. A confirmation in another language is assessed like any request, which costs one classifier call and changes nothing else.
 - **The `/mods` switch is read from `~/.claude/mods/switches.json`**, which is how the `/mods` panel stores it today. That file isn't a documented interface.
 - **Logs are never deleted.** One small file per session accumulates in the log folder. They hold the start of each request and the working folder, so delete them if that matters to you.
 

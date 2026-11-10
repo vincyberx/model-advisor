@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { isConfirmation, parseAdvice, propose } from './register'
+import { LEVELS, SCALE, isConfirmation, isItalian, parseAdvice, propose } from './register'
 
 const OPUS_XHIGH = { model: 'claude-opus-5-5', effort: 'xhigh' } as const
 
@@ -13,6 +13,8 @@ type Options = {
   context?: number
   model?: string
   switches?: Record<string, unknown>
+  // The language Claude Code is set to, as its /config row holds it.
+  language?: string
 }
 
 // Nothing sits below the mod: these hooks play the engine.
@@ -23,6 +25,7 @@ function engine(on: On, options: Options) {
     context: [] as string[],
     log: '',
     prompt: '',
+    system: '',
     questions: [] as string[],
     steps: [] as { model: string; effort?: unknown; agentId?: string }[],
     subagentModel: undefined as string | undefined,
@@ -45,6 +48,9 @@ function engine(on: On, options: Options) {
     return { value: undefined }
   })
   on('process.run', () => ({ value: { code: 0, stdout: '/home/test/.claude', stderr: '' } as never }))
+  on('config.list', () => ({
+    value: (options.language ? [{ key: 'language', label: 'Language', kind: 'text', value: options.language }] : []) as never,
+  }))
   on('session.id', () => ({ value: 'test-session' }))
   on('session.cwd', () => ({ value: '/project' }))
   on('session.messages', () => ({ value: [{ role: 'assistant', text: 'I propose to implement phase 3: API and package.', toolUses: [] }] as never }))
@@ -53,6 +59,7 @@ function engine(on: On, options: Options) {
   on('model.complete', (_, e: any) => {
     seen.assessments += 1
     seen.prompt = String(e.prompt)
+    seen.system = String(e.system)
     return {
       value: {
         isAnswered: true,
@@ -66,8 +73,12 @@ function engine(on: On, options: Options) {
     const q = e.questions[0]
     seen.questions.push(q.question)
     const labels: string[] = q.options.map((o: { label: string }) => o.label)
-    const look = { take: '(recommended)', alternative: '(same model)', keep: 'Keep ' }[options.answer ?? 'take']
-    const picked = labels.find(l => l.includes(look)) ?? ''
+    const look = {
+      take: ['(recommended)', '(consigliato)'],
+      alternative: ['(same model)', '(stesso modello)'],
+      keep: ['Keep ', 'Tieni '],
+    }[options.answer ?? 'take']
+    const picked = labels.find(l => look.some(x => l.includes(x))) ?? ''
     return { result: { questions: e.questions, answers: { [q.question]: picked } } as never }
   })
   on('prompt.compose', () => ({
@@ -128,6 +139,9 @@ test('recognises short confirmations and lets real requests through', () => {
   expect(isConfirmation('yes, do it all')).toBe(true)
   expect(isConfirmation('Ok, perfect, proceed!')).toBe(true)
   expect(isConfirmation('ok procedi')).toBe(true)
+  expect(isConfirmation('Va bene, continua pure')).toBe(true)
+  expect(isConfirmation("d'accordo, avanti")).toBe(true)
+  expect(isConfirmation('va bene ma prima controlla i test')).toBe(false)
   expect(isConfirmation('where did we leave off?')).toBe(false)
   expect(isConfirmation('update and push the vualt')).toBe(false)
   expect(isConfirmation('ok close it all then update the notes with commit and push')).toBe(false)
@@ -136,6 +150,7 @@ test('recognises short confirmations and lets real requests through', () => {
 test('reads the advice JSON even with text around it', () => {
   expect(parseAdvice('{"profile": 4, "reason": "needs judgment", "ultracode": true}')).toEqual({ level: 4, reason: 'needs judgment', ultracode: true })
   expect(parseAdvice('Here: {"level": 2, "reason": "x"} end')?.level).toBe(2)
+  expect(parseAdvice('{"profilo": 5, "motivo": "serve giudizio", "ultracode": false}')).toEqual({ level: 5, reason: 'serve giudizio', ultracode: false })
   expect(parseAdvice('{"level": 9}')).toBe(null)
   expect(parseAdvice('nothing')).toBe(null)
 })
@@ -411,4 +426,71 @@ test('the classifier sees the end of the previous reply', async ($, on) => {
 
   await request($, 'go ahead with that part please')
   expect(seen.prompt).toContain('I propose to implement phase 3')
+})
+
+test('the two languages describe the same eight profiles', () => {
+  for (const scale of [SCALE.en, SCALE.it]) {
+    const lines = scale.split('\n')
+    expect(lines.length).toBe(Object.keys(LEVELS).length)
+    lines.forEach((line, i) => expect(line.startsWith(`${i + 1} = ${LEVELS[i + 1]?.name}: `)).toBe(true))
+  }
+})
+
+test('recognises Italian among the ways Claude Code names a language', () => {
+  expect(isItalian('Italian')).toBe(true)
+  expect(isItalian(' italiano ')).toBe(true)
+  expect(isItalian('it-IT')).toBe(true)
+  expect(isItalian('English')).toBe(false)
+  expect(isItalian(undefined)).toBe(false)
+})
+
+test('with Claude Code set to Italian, the classifier and the question are in Italian', async ($, on) => {
+  const seen = engine(on, { level: 6, turns: 5, model: 'claude-sonnet-5-5', language: 'Italian' })
+
+  await request($, 'perché il server live continua a cadere?')
+  await step($, 't1', { model: 'claude-sonnet-5-5', effort: 'medium' })
+  expect(seen.system).toContain('Sei il consigliere di modello ed effort')
+  expect(seen.prompt).toContain("Richiesta dell'utente")
+  expect(seen.questions[0]).toContain('serve un modello più forte: consiglio Opus 5.5 · high')
+  expect(seen.questions[0]).toContain('circa 120k token')
+  expect(seen.steps[0]).toEqual({ model: 'claude-opus-5-5', effort: 'high', agentId: undefined })
+
+  const lines = seen.log.trim().split('\n').map(l => JSON.parse(l))
+  expect(lines[0]?.outcome).toBe('question for Opus 5.5 · high: chose Opus 5.5 · high')
+})
+
+test('the language option wins over the language Claude Code is set to', { options: { language: 'en' } }, async ($, on) => {
+  const seen = engine(on, { level: 6, turns: 5, model: 'claude-sonnet-5-5', language: 'Italian' })
+
+  await request($, 'perché il server live continua a cadere?')
+  expect(seen.system).toContain('You advise Claude Code on model and effort')
+  expect(seen.questions[0]).toContain('needs a stronger model')
+})
+
+test('set to Italian by option, it speaks Italian whatever Claude Code is set to', { options: { language: 'it' } }, async ($, on) => {
+  const seen = engine(on, { level: 2 })
+
+  await subagent($)
+  expect(seen.system).toContain('Ricevi il brief')
+  expect(seen.lines.some(l => l.includes('sotto-agente «Find the logger» su Haiku 5.5 · medium, scelto dal mod'))).toBe(true)
+
+  const r = await $.prompt.compose(COMPOSE)
+  expect(r.sections.at(-1)?.text).toContain('# Modello per sotto-agenti e sessioni')
+})
+
+test("the person's note about their work reaches the classifier, before the rules", { options: { context: 'I edit video in Resolve; a final render is production work.' } }, async ($, on) => {
+  const seen = engine(on, { level: 5, turns: 3 })
+
+  await request($, 'render the final cut')
+  const note = seen.system.indexOf('I edit video in Resolve')
+  expect(note).toBeGreaterThan(seen.system.indexOf('8 = Fable 5.2'))
+  expect(note).toBeLessThan(seen.system.indexOf('Rules:'))
+})
+
+test('with no note, the classifier gets the instructions alone', async ($, on) => {
+  const seen = engine(on, { level: 5, turns: 3 })
+
+  await request($, 'render the final cut')
+  expect(seen.system).not.toContain('A note from the person')
+  expect(seen.system).toContain('Never for ordinary work.\n\nRules:')
 })
