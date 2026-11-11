@@ -1,13 +1,13 @@
 import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { LEVELS, SCALE, isConfirmation, isItalian, parseAdvice, propose } from './register'
+import { LEVELS, SCALE, effortOn, isConfirmation, isItalian, parseAdvice, propose } from './register'
 
 const OPUS_XHIGH = { model: 'claude-opus-5-5', effort: 'xhigh' } as const
 
 type Options = {
   level?: number
-  answer?: 'take' | 'alternative' | 'keep'
+  answer?: 'take' | 'alternative' | 'wider' | 'keep'
   surfaces?: string[]
   turns?: number
   context?: number
@@ -15,6 +15,10 @@ type Options = {
   switches?: Record<string, unknown>
   // The language Claude Code is set to, as its /config row holds it.
   language?: string
+  // The classifier says the request corrects the work just done.
+  correction?: boolean
+  // The transcript, when a test needs its own.
+  messages?: object[]
 }
 
 // Nothing sits below the mod: these hooks play the engine.
@@ -27,10 +31,12 @@ function engine(on: On, options: Options) {
     prompt: '',
     system: '',
     questions: [] as string[],
+    options: [] as string[][],
     steps: [] as { model: string; effort?: unknown; agentId?: string }[],
     subagentModel: undefined as string | undefined,
     lines: [] as string[],
     written: [] as string[],
+    status: undefined as string | undefined,
   }
   on('session.surfaces', () => ({ value: (options.surfaces ?? ['desktop']) as never }))
   on('session.turns', () => ({ value: options.turns ?? 0 }))
@@ -53,7 +59,9 @@ function engine(on: On, options: Options) {
   }))
   on('session.id', () => ({ value: 'test-session' }))
   on('session.cwd', () => ({ value: '/project' }))
-  on('session.messages', () => ({ value: [{ role: 'assistant', text: 'I propose to implement phase 3: API and package.', toolUses: [] }] as never }))
+  on('session.messages', () => ({
+    value: (options.messages ?? [{ role: 'assistant', text: 'I propose to implement phase 3: API and package.', toolUses: [] }]) as never,
+  }))
   on('session.model', () => ({ value: options.model ?? 'claude-opus-5-5' }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: options.context ?? 120_000, window: 1_000_000 }, rateLimits: [] } }))
   on('model.complete', (_, e: any) => {
@@ -63,7 +71,7 @@ function engine(on: On, options: Options) {
     return {
       value: {
         isAnswered: true,
-        text: `{"profile": ${options.level ?? 3}, "reason": "routine with a clear scope", "ultracode": false}`,
+        text: `{"profile": ${options.level ?? 3}, "reason": "routine with a clear scope", "ultracode": false, "correction": ${!!options.correction}}`,
         usage: { input_tokens: 1, output_tokens: 1 },
       } as never,
     }
@@ -73,9 +81,11 @@ function engine(on: On, options: Options) {
     const q = e.questions[0]
     seen.questions.push(q.question)
     const labels: string[] = q.options.map((o: { label: string }) => o.label)
+    seen.options.push(labels)
     const look = {
       take: ['(recommended)', '(consigliato)'],
       alternative: ['(same model)', '(stesso modello)'],
+      wider: ['for the whole session', 'per tutta la sessione'],
       keep: ['Keep ', 'Tieni '],
     }[options.answer ?? 'take']
     const picked = labels.find(l => look.some(x => l.includes(x))) ?? ''
@@ -86,7 +96,10 @@ function engine(on: On, options: Options) {
   }))
   on('attribution.text', (_, e) => ({ text: e.text }))
   on('prompt.section', (_, e) => ({ text: e.text }))
-  on('ui.status', () => ({ value: undefined }))
+  on('ui.status', (_, e: any) => {
+    seen.status = e.text
+    return { value: undefined }
+  })
   on('ui.invalidate', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
   on('ui.log', (_, e: any) => {
@@ -166,12 +179,12 @@ test('mid-session it proposes only the effort, a different model only if stronge
 })
 
 test('on the first request it applies model and effort and keeps them on confirmations', async ($, on) => {
-  const seen = engine(on, { level: 3, turns: 0 })
+  const seen = engine(on, { level: 4, turns: 0 })
 
   await request($, "update the notes with today's changes and push")
   await step($, 't1')
   expect(seen.questions.length).toBe(1)
-  expect(seen.steps[0]).toEqual({ model: 'claude-sonnet-5-5', effort: 'medium', agentId: undefined })
+  expect(seen.steps[0]).toEqual({ model: 'claude-sonnet-5-5', effort: 'high', agentId: undefined })
 
   await request($, 'ok go ahead')
   await step($, 't2')
@@ -391,7 +404,7 @@ test('turned off from the /mods panel it neither assesses, asks nor touches the 
 })
 
 test('every decision ends up in the log, with level, reason and outcome', async ($, on) => {
-  const options: Options = { level: 3, turns: 0 }
+  const options: Options = { level: 4, turns: 0 }
   const seen = engine(on, options)
 
   await request($, "update the notes with today's changes and push")
@@ -406,9 +419,9 @@ test('every decision ends up in the log, with level, reason and outcome', async 
   expect(lines[0]).toMatchObject({
     kind: 'request',
     cwd: '/project',
-    level: 3,
+    level: 4,
     reason: 'routine with a clear scope',
-    outcome: 'question for Sonnet 5.5 · medium: chose Sonnet 5.5 · medium',
+    outcome: 'question for Sonnet 5.5 · high: chose Sonnet 5.5 · high',
   })
   expect(lines[1]?.outcome).toBe('confirmation: level in use kept')
   expect(lines[2]).toMatchObject({ kind: 'subagent', level: 2, outcome: 'Haiku 5.5 · medium, chosen by the mod' })
@@ -493,4 +506,240 @@ test('with no note, the classifier gets the instructions alone', async ($, on) =
   await request($, 'render the final cut')
   expect(seen.system).not.toContain('A note from the person')
   expect(seen.system).toContain('Never for ordinary work.\n\nRules:')
+})
+
+test('the status line says what is running in place of the session, and only what differs', async ($, on) => {
+  const seen = engine(on, { level: 2, turns: 5 })
+
+  await request($, 'commit and push')
+  expect(seen.status).toBe('In use: effort low')
+  await step($, 't1')
+  expect(seen.status).toBe('In use: effort low (session: xhigh)')
+})
+
+test('with another model the status line names it and the model of the session', async ($, on) => {
+  const seen = engine(on, { level: 3, turns: 0, language: 'Italian' })
+
+  await request($, 'aggiorna le note e fai push')
+  await step($, 't1')
+  expect(seen.status).toBe('In uso: Sonnet 5.5 · medium (sessione: Opus 5.5)')
+})
+
+test('when the level matches the session there is no status line', async ($, on) => {
+  const seen = engine(on, { level: 7, turns: 5 })
+
+  await request($, 'audit the whole system')
+  await step($, 't1')
+  await request($, 'audit the rest too, module by module')
+  expect(seen.status).toBe(undefined)
+})
+
+test('a stronger model goes to low effort only for mechanical work', () => {
+  for (const model of ['claude-opus-5-5', 'claude-fable-5-2']) {
+    expect(effortOn(model, 3)).toBe('low')
+    expect(effortOn(model, 4)).toBe('medium')
+  }
+  expect(effortOn('claude-opus-5-5', 5)).toBe('medium')
+  // Fable's default: below it only where quality has been shown to hold.
+  expect(effortOn('claude-fable-5-2', 5)).toBe('high')
+})
+
+test('between two profiles the classifier is told to pick the higher', async ($, on) => {
+  const seen = engine(on, { level: 4, turns: 5 })
+
+  await request($, 'update the notes')
+  expect(seen.system).toContain('pick the higher one')
+})
+
+test('the Italian instructions carry the same rule for doubtful requests', async ($, on) => {
+  const seen = engine(on, { level: 4, turns: 5, language: 'Italian' })
+
+  await request($, 'aggiorna le note')
+  expect(seen.system).toContain('scegli il più alto')
+})
+
+test('raising the level by hand after the mod chose is logged as a raise', async ($, on) => {
+  const seen = engine(on, { level: 2, turns: 5 })
+
+  await request($, 'commit and push')
+  await step($, 't1')
+  await step($, 't2', { model: 'claude-opus-5-5', effort: 'high' })
+  const last = JSON.parse(seen.log.trim().split('\n').pop() ?? '{}')
+  expect(last.kind).toBe('session')
+  expect(last.outcome).toBe('session set to Opus 5.5 · high over Opus 5.5 · low: raised')
+})
+
+test('a request that corrects the work just done is logged with the level that work ran on', async ($, on) => {
+  const options: Options = { level: 2, turns: 5 }
+  const seen = engine(on, options)
+
+  await request($, 'commit and push')
+  await step($, 't1')
+  options.correction = true
+  await request($, 'no, you pushed the wrong branch: redo it')
+  const lines = seen.log.trim().split('\n').map(l => JSON.parse(l))
+  expect(lines[0].corrects).toBe(undefined)
+  expect(lines[1].corrects).toBe('Opus 5.5 · low')
+})
+
+test('reads the correction flag in both languages and leaves it out when false', () => {
+  expect(parseAdvice('{"profilo": 4, "motivo": "x", "correzione": true}')?.correction).toBe(true)
+  expect(parseAdvice('{"profile": 4, "reason": "x", "correction": false}')?.correction).toBe(undefined)
+})
+
+test('a light opening request is answered but does not fix the model of the session', async ($, on) => {
+  const options: Options = { level: 2, turns: 0, context: 10_000 }
+  const seen = engine(on, options)
+
+  await request($, 'is the vault in sync?')
+  await step($, 't1')
+  expect(seen.steps[0]).toEqual({ model: 'claude-haiku-5-5', effort: 'medium', agentId: undefined })
+
+  options.turns = 1
+  options.level = 3
+  await request($, 'commit the note and push')
+  await step($, 't2')
+  expect(seen.questions.length).toBe(2)
+  expect(seen.questions[1]).toContain('I recommend Sonnet 5.5 · medium')
+  expect(seen.questions[1]).not.toContain('without the cache')
+  expect(seen.steps[1]).toEqual({ model: 'claude-sonnet-5-5', effort: 'medium', agentId: undefined })
+})
+
+test('the classifier is given the question the user is answering', async ($, on) => {
+  const seen = engine(on, {
+    level: 5,
+    turns: 5,
+    messages: [
+      { role: 'user', text: 'how do we calibrate it better?', toolUses: [] },
+      { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'wrap_up', input: { ask: 'Add the two signals to the log?' } }] },
+      { role: 'assistant', text: 'Nothing committed and nothing pushed.', toolUses: [] },
+    ],
+  })
+
+  await request($, 'Yes, add them')
+  expect(seen.prompt).toContain('asked the user: «Add the two signals to the log?»')
+})
+
+test('a question from an earlier turn is not passed on', async ($, on) => {
+  const seen = engine(on, {
+    level: 5,
+    turns: 5,
+    messages: [
+      { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'wrap_up', input: { ask: 'Publish it?' } }] },
+      { role: 'user', text: 'no, first look at the logs', toolUses: [] },
+      { role: 'assistant', text: 'The logs look right.', toolUses: [] },
+    ],
+  })
+
+  await request($, 'and the subagents?')
+  expect(seen.prompt).not.toContain('Publish it?')
+})
+
+test('after a light request a confirmation is assessed, after real work it keeps the level', async ($, on) => {
+  const options: Options = { level: 2, turns: 5 }
+  const seen = engine(on, options)
+
+  await request($, 'is it pushed?')
+  await request($, 'ok go ahead')
+  expect(seen.assessments).toBe(2)
+
+  options.level = 5
+  await request($, 'merge the two branches and publish')
+  await request($, 'ok go ahead')
+  expect(seen.assessments).toBe(3)
+})
+
+const FABLE_HIGH = { model: 'claude-fable-5-2', effort: 'high' } as const
+
+test('when the session would settle on Sonnet, Opus for the whole session is offered too', async ($, on) => {
+  const options: Options = { level: 4, turns: 0, model: 'claude-fable-5-2', answer: 'wider' }
+  const seen = engine(on, options)
+
+  await request($, 'check the inbox and tell me which emails are noise')
+  await step($, 't1', FABLE_HIGH)
+  expect(seen.options[0]).toEqual([
+    'Sonnet 5.5 · high (recommended)',
+    'Opus 5.5 · medium for the whole session',
+    'Keep Fable 5.2',
+    seen.options[0]?.[3] ?? '',
+  ])
+  expect(seen.questions[0]).toContain('Opus avoids a model switch later')
+  expect(seen.steps[0]).toEqual({ model: 'claude-opus-5-5', effort: 'medium', agentId: undefined })
+
+  // Heavier work then needs no question: only the effort moves.
+  options.turns = 1
+  options.level = 6
+  await request($, 'delete the noise and the ads')
+  await step($, 't2', FABLE_HIGH)
+  expect(seen.questions.length).toBe(1)
+  expect(seen.steps[1]).toEqual({ model: 'claude-opus-5-5', effort: 'high', agentId: undefined })
+})
+
+test('a session already on Opus is not offered Opus again', async ($, on) => {
+  const seen = engine(on, { level: 4, turns: 0 })
+
+  await request($, 'check the inbox and tell me which emails are noise')
+  expect(seen.options[0]?.some(o => o.includes('for the whole session'))).toBe(false)
+})
+
+test('a request that settles on Opus or stronger gets no extra option', async ($, on) => {
+  const seen = engine(on, { level: 5, turns: 0, model: 'claude-fable-5-2' })
+
+  await request($, 'implement the export feature')
+  expect(seen.options[0]?.some(o => o.includes('for the whole session'))).toBe(false)
+})
+
+test('the Italian question offers Opus for the whole session in Italian', async ($, on) => {
+  const seen = engine(on, { level: 3, turns: 0, model: 'claude-fable-5-2', language: 'Italian' })
+
+  await request($, 'fai commit e push')
+  expect(seen.options[0]).toContain('Opus 5.5 · low per tutta la sessione')
+})
+
+const OPUS_HIGH = { model: 'claude-opus-5-5', effort: 'high' } as const
+
+test('after "keep", the effort goes up but not below the level that was kept', async ($, on) => {
+  const options: Options = { level: 4, turns: 0, answer: 'keep' }
+  const seen = engine(on, options)
+
+  await request($, 'put the project in a section with an icon')
+  await step($, 't1', OPUS_HIGH)
+  expect(seen.steps[0]).toEqual({ ...OPUS_HIGH, agentId: undefined })
+
+  // Profile 4 on Opus is medium: without the kept level it would drop at once.
+  options.turns = 1
+  await request($, 'find the base texture of the arch')
+  await step($, 't2', OPUS_HIGH)
+  expect(seen.steps[1]?.effort).toBe('high')
+  expect(JSON.parse(seen.log.trim().split('\n').pop() ?? '{}').outcome).toBe(
+    'stays on Opus 5.5 · high: not below the level you kept',
+  )
+
+  options.level = 7
+  await request($, 'audit the whole pipeline')
+  await step($, 't3', OPUS_HIGH)
+  expect(seen.steps[2]?.effort).toBe('xhigh')
+
+  options.level = 2
+  await request($, 'which version is it?')
+  await request($, 'and where is the log?')
+  await step($, 't4', OPUS_HIGH)
+  expect(seen.steps[3]?.effort).toBe('high')
+  expect(seen.questions.length).toBe(1)
+})
+
+test('setting the effort by hand releases the level that was kept', async ($, on) => {
+  const options: Options = { level: 4, turns: 0, answer: 'keep' }
+  const seen = engine(on, options)
+
+  await request($, 'put the project in a section with an icon')
+  await step($, 't1', OPUS_HIGH)
+  await step($, 't2', { model: 'claude-opus-5-5', effort: 'medium' })
+
+  options.turns = 2
+  options.level = 2
+  await request($, 'which version is it?')
+  await request($, 'and where is the log?')
+  await step($, 't3', { model: 'claude-opus-5-5', effort: 'medium' })
+  expect(seen.steps[2]?.effort).toBe('low')
 })

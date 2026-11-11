@@ -9,6 +9,7 @@ const decided = atom({ plugin: 'model-advisor', key: 'decided' } as const, false
 const openers = atom({ plugin: 'model-advisor', key: 'openers' } as const, 0)
 const lastLevel = atom({ plugin: 'model-advisor', key: 'lastLevel' } as const, null)
 const seenEffort = atom({ plugin: 'model-advisor', key: 'seenEffort' } as const, null)
+const floor = atom({ plugin: 'model-advisor', key: 'floor' } as const, null)
 
 const EFFORT_ORDER: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
@@ -17,6 +18,14 @@ const SMALL_CONTEXT = 40_000
 
 // Above this level a subagent does not go without a person deciding it.
 const MAX_SUBAGENT_LEVEL = 6
+// An opening request up to this profile (a question, one command) is answered but does not
+// fix the session's model: that waits for the first request that brings work, while the
+// conversation is still short and switching costs little. So Haiku never becomes the
+// model a working session is settled on.
+const LIGHT_OPENER = 2
+// A confirmation keeps the level in use, unless the previous request was this light:
+// then "ok go ahead" may start heavier work than the level covers, and it is assessed.
+const LOW_LEVEL = 3
 
 type Family = 'haiku' | 'sonnet' | 'opus' | 'fable'
 type Level = { model: string; effort: Effort; name: string }
@@ -40,15 +49,17 @@ export const LEVELS: Record<number, Level> = {
 const STRENGTH: Record<Family, number> = { haiku: 0, sonnet: 1, opus: 2, fable: 3 }
 
 // Mid-session the model in use stays and only the effort moves: switching models makes
-// Claude re-read the conversation without the cache. A stronger model covers the lighter
-// profiles at low effort (Anthropic reports Opus 5.5 at low close to its default on several
-// coding evaluations, at much lower cost); a profile the model in use does not cover makes
-// the mod propose a stronger model.
+// Claude re-read the conversation without the cache. A stronger model covers the mechanical
+// profiles (1-3) at low effort (Anthropic reports Opus 5.5 at low close to its default on
+// several coding evaluations, at much lower cost). From profile 4 up the work asks for writing
+// or reasoning, so it gets at least medium, and on Fable the judgment profiles get its default,
+// high: Anthropic says to go below it only where evals show quality holds. A profile the model
+// in use does not cover makes the mod propose a stronger model.
 const EFFORT_ON_MODEL: Record<Family, Partial<Record<number, Effort>>> = {
   haiku: { 1: 'low', 2: 'medium' },
   sonnet: { 1: 'low', 2: 'low', 3: 'medium', 4: 'high' },
-  opus: { 1: 'low', 2: 'low', 3: 'low', 4: 'low', 5: 'medium', 6: 'high', 7: 'xhigh' },
-  fable: { 1: 'low', 2: 'low', 3: 'low', 4: 'low', 5: 'medium', 6: 'high', 7: 'high', 8: 'high' },
+  opus: { 1: 'low', 2: 'low', 3: 'low', 4: 'medium', 5: 'medium', 6: 'high', 7: 'xhigh' },
+  fable: { 1: 'low', 2: 'low', 3: 'low', 4: 'medium', 5: 'high', 6: 'high', 7: 'high', 8: 'high' },
 }
 
 // The most each model gives when the profile is above it: the "stay on this model"
@@ -103,6 +114,13 @@ const FORMAT: Record<Lang, string> = {
   it: `Rispondi SOLO con JSON, senza altro testo: {"profilo": <1-8>, "motivo": "<massimo 12 parole>", "ultracode": <true|false>}`,
 }
 
+// Requests also say whether they correct the work just done: logged as a sign that the
+// level in use was too little.
+const REQUEST_FORMAT: Record<Lang, string> = {
+  en: `Answer ONLY with JSON, no other text: {"profile": <1-8>, "reason": "<at most 12 words>", "ultracode": <true|false>, "correction": <true|false>}`,
+  it: `Rispondi SOLO con JSON, senza altro testo: {"profilo": <1-8>, "motivo": "<massimo 12 parole>", "ultracode": <true|false>, "correzione": <true|false>}`,
+}
+
 // `own` is the person's note about their work (the `context` option), or nothing.
 const INSTRUCTIONS: Record<Lang, (own: string) => string> = {
   en: own => `You advise Claude Code on model and effort. Claude Code is the assistant that works on the user's machines with a shell, files, git, the web and connected tools. You receive the request the user is about to send, with an excerpt of what was happening before. Pick the CHEAPEST profile that does the job right the first time: redoing botched work costs more than the right model.
@@ -114,10 +132,12 @@ ${SCALE.en}
 ${own}
 Rules:
 - Judge the work the request sets in motion, not the length of the text: "ok go ahead" weighs as much as the work proposed just before it in the excerpt.
+- When a request sits between two profiles, pick the higher one: too little means work to redo, too much costs a few tokens.
 - Requests can be in any language, often typed in a hurry and with typos.
 - "ultracode": true only if the request asks for an audit or a broad review of a whole system or repository, where several agents in parallel are needed; otherwise false.
+- "correction": true only if the request says the work just done is wrong, incomplete or has to be redone; otherwise false.
 
-${FORMAT.en}`,
+${REQUEST_FORMAT.en}`,
   it: own => `Sei il consigliere di modello ed effort per Claude Code, l'assistente che lavora sulle macchine dell'utente con shell, file, git, web e strumenti collegati. Ricevi la richiesta che l'utente sta per mandare, con un estratto di cosa stava succedendo prima. Scegli il profilo PIÙ ECONOMICO che fa bene il lavoro al primo colpo: rifare un lavoro rovinato costa più del modello giusto.
 
 ${FACTS.it}
@@ -127,10 +147,12 @@ ${SCALE.it}
 ${own}
 Regole:
 - Giudica il lavoro che la richiesta mette in moto, non la lunghezza del testo: "ok procedi" vale quanto il lavoro proposto subito prima nell'estratto.
+- Quando una richiesta sta tra due profili, scegli il più alto: troppo poco vuol dire lavoro da rifare, troppo costa pochi token.
 - Le richieste possono essere in qualsiasi lingua, spesso scritte in fretta e con refusi.
 - "ultracode": true solo se la richiesta chiede un audit o una revisione ampia di un intero sistema o repo, dove servono più agenti in parallelo; altrimenti false.
+- "correzione": true solo se la richiesta dice che il lavoro appena fatto è sbagliato, incompleto o da rifare; altrimenti false.
 
-${FORMAT.it}`,
+${REQUEST_FORMAT.it}`,
 }
 
 const SUBAGENT_INSTRUCTIONS: Record<Lang, (own: string) => string> = {
@@ -173,10 +195,11 @@ type Texts = {
   own: string
   before: (excerpt: string) => string
   previous: (level: number) => string
+  asked: (question: string) => string
   request: string
   brief: string
   modelNote: (name: string, id: string, effort: Effort) => string
-  status: (name: string) => string
+  status: (inUse: string, session: string | null) => string
   recommend: (name: string, reason: string) => string
   stronger: (name: string, reason: string, cost: string) => string
   cheap: string
@@ -185,6 +208,8 @@ type Texts = {
   header: string
   take: (name: string) => string
   alternative: (name: string) => string
+  wider: (name: string) => string
+  widerHint: string
   keep: (name: string) => string
   stop: string
   stopped: string
@@ -201,6 +226,7 @@ const TEXTS: Record<Lang, Texts> = {
   en: {
     own: 'A note from the person using Claude Code about their own work and tools:',
     before: excerpt => `Excerpt of what was happening before (end of the assistant's last reply):\n«${excerpt}»\n\n`,
+    asked: question => `The assistant then asked the user: «${question}»\n\n`,
     previous: level => `The previous request was profile ${level}: take it into account only if this one continues it.\n\n`,
     request: "The user's request",
     brief: "The subagent's brief",
@@ -209,7 +235,7 @@ const TEXTS: Record<Lang, Texts> = {
       `it runs on ${name} (ID ${id}), effort ${effort}. The system prompt still names ` +
       `the session's model because it was composed before the choice; it updates from the next turn. ` +
       `For the model's name and for Co-Authored-By lines, this note applies.`,
-    status: name => `Level: ${name}`,
+    status: (inUse, session) => `In use: ${inUse}${session ? ` (session: ${session})` : ''}`,
     recommend: (name, reason) => `For this request I recommend ${name}${reason}.`,
     stronger: (name, reason, cost) => `This request needs a stronger model: I recommend ${name}${reason}. ${cost}`,
     cheap: 'The conversation is still short: switching now is cheap.',
@@ -219,6 +245,8 @@ const TEXTS: Record<Lang, Texts> = {
     header: 'Level',
     take: name => `${name} (recommended)`,
     alternative: name => `${name} (same model)`,
+    wider: name => `${name} for the whole session`,
+    widerHint: 'If heavier work follows, Opus avoids a model switch later.',
     keep: name => `Keep ${name}`,
     stop: 'Stop asking in this session',
     stopped: 'Advice off for this session: /model-advisor on turns it back on',
@@ -235,6 +263,7 @@ const TEXTS: Record<Lang, Texts> = {
   it: {
     own: 'Nota di chi usa Claude Code sul proprio lavoro e i propri strumenti:',
     before: excerpt => `Estratto di cosa succedeva prima (fine dell'ultima risposta dell'assistente):\n«${excerpt}»\n\n`,
+    asked: question => `Poi l'assistente ha chiesto all'utente: «${question}»\n\n`,
     previous: level => `La richiesta precedente era di profilo ${level}: tienine conto solo se questa la continua.\n\n`,
     request: "Richiesta dell'utente",
     brief: 'Brief del sotto-agente',
@@ -243,7 +272,7 @@ const TEXTS: Record<Lang, Texts> = {
       `gira su ${name} (ID ${id}), effort ${effort}. Il prompt di sistema nomina ancora ` +
       `il modello della sessione perché è stato composto prima della scelta; si aggiorna dal turno successivo. ` +
       `Per il nome del modello e per le righe Co-Authored-By vale questa nota.`,
-    status: name => `Livello: ${name}`,
+    status: (inUse, session) => `In uso: ${inUse}${session ? ` (sessione: ${session})` : ''}`,
     recommend: (name, reason) => `Per questa richiesta consiglio ${name}${reason}.`,
     stronger: (name, reason, cost) =>
       `Per questa richiesta serve un modello più forte: consiglio ${name}${reason}. ${cost}`,
@@ -254,6 +283,8 @@ const TEXTS: Record<Lang, Texts> = {
     header: 'Livello',
     take: name => `${name} (consigliato)`,
     alternative: name => `${name} (stesso modello)`,
+    wider: name => `${name} per tutta la sessione`,
+    widerHint: 'Se dopo arriva lavoro più pesante, Opus evita un cambio di modello a metà.',
     keep: name => `Tieni ${name}`,
     stop: 'Non chiedere più qui',
     stopped: 'Consigli spenti per questa sessione: /model-advisor on per riaccenderli',
@@ -315,7 +346,7 @@ const CONFIRMATION_WORDS = new Set([
   'sí', 'oui', 'merci', 'vas-y', 'ja', 'danke',
 ])
 
-type Advice = { level: number; reason: string; ultracode?: boolean }
+type Advice = { level: number; reason: string; ultracode?: boolean; correction?: boolean }
 
 export function isConfirmation(text: string): boolean {
   const t = text.trim().toLowerCase()
@@ -342,7 +373,14 @@ export function parseAdvice(answer: string): Advice | null {
 
     const reason = j.reason ?? j.motivo
 
-    return { level, reason: typeof reason === 'string' ? reason.trim() : '', ultracode: j.ultracode === true }
+    const correction = (j.correction ?? j.correzione) === true
+
+    return {
+      level,
+      reason: typeof reason === 'string' ? reason.trim() : '',
+      ultracode: j.ultracode === true,
+      ...(correction ? { correction } : {}),
+    }
   } catch {
     return null
   }
@@ -407,11 +445,13 @@ async function assess(
   kind: Kind,
   previous: number | null = null,
   before = '',
+  asked = '',
 ): Promise<Advice | null> {
   const l = await lang($)
   const t = TEXTS[l]
   const own = ownContext ? `\n${t.own}\n${ownContext}\n` : ''
-  const context = (before ? t.before(before) : '') + (previous === null ? '' : t.previous(previous))
+  const context =
+    (before ? t.before(before) : '') + (asked ? t.asked(asked) : '') + (previous === null ? '' : t.previous(previous))
   try {
     const r = await $.model.complete({
       model: 'sonnet',
@@ -447,6 +487,43 @@ async function lastReply($: EngineInterface): Promise<string> {
   }
 }
 
+// A question put to the user through a tool (a dialog, a next-step box) is not in the
+// reply's text: without it "yes, add them" has nothing to refer to.
+function questionIn(input: Record<string, unknown>): string {
+  if (typeof input.ask === 'string') {
+    return input.ask
+  }
+  const questions = Array.isArray(input.questions) ? input.questions : []
+
+  return questions
+    .map(q => (q && typeof q === 'object' && typeof (q as { question?: unknown }).question === 'string' ? (q as { question: string }).question : ''))
+    .filter(Boolean)
+    .join(' ')
+}
+
+// The last question asked since the user's previous message, or ''.
+async function lastQuestion($: EngineInterface): Promise<string> {
+  try {
+    const messages = await $.session.messages()
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (!m || (m.role === 'user' && m.text.trim())) {
+        break
+      }
+      for (const use of [...(m.toolUses ?? [])].reverse()) {
+        const question = questionIn(use.input ?? {}).trim()
+        if (question) {
+          return question.replace(/\s+/g, ' ').slice(0, 300)
+        }
+      }
+    }
+  } catch {
+    // No transcript: the excerpt alone.
+  }
+
+  return ''
+}
+
 function inParens(reason: string): string {
   return reason ? ` (${reason.replace(/\.$/, '')})` : ''
 }
@@ -466,11 +543,26 @@ async function apply(
   const asSession = sameModel(chosen.model, sessionModel) && chosen.effort === sessionEffort
   const next: Choice | null = asSession ? null : { level, ...chosen, sessionModel, sessionEffort }
   await update($, choice, () => next)
-  $.ui.status(next ? TEXTS[await lang($)].status(next.name) : undefined)
+  $.ui.status(next ? statusText(next, await lang($)) : undefined)
   if ((before?.model ?? sessionModel) !== (next?.model ?? sessionModel)) {
     // The model's name sits in a system prompt section: from the next turn prompt.section rewrites it.
     $.ui.invalidate('prompt.section')
   }
+}
+
+// The app's own selector keeps showing the session's model and effort: the line says
+// what is running in their place, and names only what differs.
+function statusText(c: Choice, l: Lang): string {
+  return sameModel(c.model, c.sessionModel)
+    ? TEXTS[l].status(`effort ${c.effort}`, c.sessionEffort)
+    : TEXTS[l].status(c.name, modelName(c.sessionModel))
+}
+
+function direction(c: Choice, model: string, effort: Effort | null): 'raised' | 'lowered' | 'changed' {
+  const byModel = STRENGTH[family(model)] - STRENGTH[family(c.model)]
+  const by = byModel || (effort ? EFFORT_ORDER.indexOf(effort) - EFFORT_ORDER.indexOf(c.effort) : 0)
+
+  return by > 0 ? 'raised' : by < 0 ? 'lowered' : 'changed'
 }
 
 function sameModel(a: string, b: string): boolean {
@@ -561,13 +653,25 @@ async function decide(
 
     return 'greeting: model not decided yet'
   }
-  if (firstRequest) {
+  if (firstRequest && advice.level <= LIGHT_OPENER) {
+    await update($, openers, n => n + 1)
+  } else if (firstRequest) {
     await update($, decided, () => true)
   }
 
-  const p = propose(advice.level, inUse.model, firstRequest)
-  if (!p || (sameModel(p.recommended.model, inUse.model) && p.recommended.effort === inUse.effort)) {
+  const proposed = propose(advice.level, inUse.model, firstRequest)
+  if (!proposed) {
     return `stays on ${levelName(inUse.model, inUse.effort)}`
+  }
+  // "Keep" is a choice: on that model the effort may go up, not below what was kept.
+  const min = await read($, floor)
+  const held =
+    min?.effort && sameModel(min.model, inUse.model) && sameModel(proposed.recommended.model, inUse.model) && lowers(proposed.recommended.effort, min.effort)
+      ? min.effort
+      : null
+  const p = held ? { ...proposed, recommended: levelOn(inUse.model, held) } : proposed
+  if (sameModel(p.recommended.model, inUse.model) && p.recommended.effort === inUse.effort) {
+    return `stays on ${levelName(inUse.model, inUse.effort)}${held ? ': not below the level you kept' : ''}`
   }
 
   if (sameModel(p.recommended.model, inUse.model) || (!firstRequest && !p.switchesModel)) {
@@ -591,11 +695,24 @@ async function decide(
     question = t.stronger(p.recommended.name, reason, cost)
   }
 
+  // The request that settles the session is often a preparatory step ("check", "read")
+  // lighter than what follows. When it would settle on Sonnet, Opus is offered too, at the
+  // effort this request needs: whoever knows heavier work is coming avoids a switch later.
+  const opus = LEVELS[5]?.model
+  const widerLevel =
+    opus && firstRequest && advice.level > LIGHT_OPENER && family(p.recommended.model) === 'sonnet' && family(inUse.model) !== 'opus'
+      ? levelOn(opus, effortOn(opus, advice.level))
+      : null
+  if (widerLevel) {
+    question = `${question} ${t.widerHint}`
+  }
+
   const take = t.take(p.recommended.name)
   const alternative = p.alternative ? t.alternative(p.alternative.name) : null
+  const wider = widerLevel ? t.wider(widerLevel.name) : null
   const keep = t.keep(levelName(inUse.model, inUse.effort))
   const stop = t.stop
-  const options = [take, ...(alternative ? [alternative] : []), keep, stop]
+  const options = [take, ...(alternative ? [alternative] : []), ...(wider ? [wider] : []), keep, stop]
 
   let answer: string
   try {
@@ -604,7 +721,7 @@ async function decide(
     return `question for ${p.recommended.name} closed unanswered: stays on ${levelName(inUse.model, inUse.effort)}`
   }
 
-  const chosen = answer === take ? p.recommended : answer === alternative ? p.alternative : null
+  const chosen = answer === take ? p.recommended : answer === alternative ? p.alternative : answer === wider ? widerLevel : null
   if (chosen) {
     await apply($, advice.level, chosen, sessionModel, sessionEffort)
 
@@ -617,6 +734,9 @@ async function decide(
     return `question for ${p.recommended.name}: advice turned off`
   }
 
+  // The effort is not known before the session's first step: turn.step fills it in.
+  await update($, floor, () => ({ model: inUse.model, effort: inUse.effort }))
+
   return `question for ${p.recommended.name}: kept ${levelName(inUse.model, inUse.effort)}`
 }
 
@@ -627,7 +747,15 @@ let folderReady = false
 
 async function record(
   $: EngineInterface,
-  entry: { kind: 'request' | 'subagent'; text: string; level?: number; reason?: string; outcome: string },
+  entry: {
+    kind: 'request' | 'subagent' | 'session'
+    text: string
+    level?: number
+    reason?: string
+    outcome: string
+    // Set when the request corrects the work just done: the level that work ran on.
+    corrects?: string
+  },
 ) {
   try {
     const folder = `${await claudeDir($)}/mods/model-advisor`
@@ -682,6 +810,7 @@ export const register: Register = (on, options) => {
     if (arg === 'reset') {
       const c = await read($, choice)
       await update($, choice, () => null)
+      await update($, floor, () => null)
       $.ui.status(undefined)
       if (modelChanged(c)) {
         $.ui.invalidate('prompt.section')
@@ -712,7 +841,8 @@ export const register: Register = (on, options) => {
       return next({ ...e, text: text.replace(/^~\s*/, '') })
     }
     const undecided = !(await read($, decided))
-    if (isConfirmation(text)) {
+    const last = await read($, lastLevel)
+    if (isConfirmation(text) && (last === null || last > LOW_LEVEL)) {
       if (undecided) {
         await update($, openers, n => n + 1)
       }
@@ -725,12 +855,13 @@ export const register: Register = (on, options) => {
     // The "first request" is the first one that brings work: opening greetings do not count.
     const firstRequest = undecided && (await $.session.turns()) <= (await read($, openers))
     const before = await read($, choice)
-    const advice = await assess($, text, 'request', await read($, lastLevel), await lastReply($))
+    const sessionModel = await $.session.model()
+    const advice = await assess($, text, 'request', last, await lastReply($), await lastQuestion($))
     if (advice?.ultracode && !/ultracode/i.test(text)) {
       $.ui.toast(TEXTS[await lang($)].ultracode)
     }
     const outcome = advice
-      ? await decide($, advice, firstRequest, await $.session.model(), await read($, seenEffort))
+      ? await decide($, advice, firstRequest, sessionModel, await read($, seenEffort))
       : 'no estimate: level in use kept'
     await record($, {
       kind: 'request',
@@ -738,6 +869,7 @@ export const register: Register = (on, options) => {
       level: advice?.level,
       reason: advice?.reason,
       outcome: advice?.ultracode ? `${outcome}; ultracode suggested` : outcome,
+      ...(advice?.correction ? { corrects: before?.name ?? levelName(sessionModel, await read($, seenEffort)) } : {}),
     })
     const after = await read($, choice)
     if (modelChanged(after) && after.model !== before?.model) {
@@ -820,12 +952,22 @@ export const register: Register = (on, options) => {
       return yield* next(effort ? { ...e, effort } : e)
     }
     const sessionEffort = asEffort(e.effort)
-    if ((await read($, seenEffort)) !== sessionEffort) {
+    const seen = await read($, seenEffort)
+    if (seen !== sessionEffort) {
       await update($, seenEffort, () => sessionEffort)
     }
 
     const c = await read($, choice)
     if (!c) {
+      const min = await read($, floor)
+      if (min && min.effort === null && sameModel(min.model, e.model)) {
+        // "Keep" was answered before the session's effort was known.
+        await update($, floor, () => ({ model: min.model, effort: sessionEffort }))
+      } else if (min && seen !== null && seen !== sessionEffort) {
+        // The effort was set with /effort: that is the level now, the kept one no longer holds.
+        await update($, floor, () => null)
+      }
+
       return yield* next(e)
     }
     if (await offInMods($)) {
@@ -836,6 +978,13 @@ export const register: Register = (on, options) => {
     }
     if (!sameModel(c.sessionModel, e.model) || (c.sessionEffort !== null && c.sessionEffort !== sessionEffort)) {
       // The session's model or effort changed with /model or /effort: that choice wins.
+      // Logged with its direction: a raise says the mod's level was too little.
+      await update($, floor, () => null)
+      await record($, {
+        kind: 'session',
+        text: '',
+        outcome: `session set to ${levelName(e.model, sessionEffort)} over ${c.name}: ${direction(c, e.model, sessionEffort)}`,
+      })
       await update($, choice, () => null)
       $.ui.status(undefined)
       $.ui.invalidate('prompt.section')
@@ -845,6 +994,9 @@ export const register: Register = (on, options) => {
     if (c.sessionEffort === null) {
       // On the first request the session's effort was not known yet.
       await update($, choice, v => (v ? { ...v, sessionEffort } : v))
+      // Now that it is known, a choice equal to the session needs no line.
+      const asSession = sameModel(c.model, c.sessionModel) && c.effort === sessionEffort
+      $.ui.status(asSession ? undefined : statusText({ ...c, sessionEffort }, await lang($)))
     }
 
     return yield* next({ ...e, model: c.model, effort: c.effort })

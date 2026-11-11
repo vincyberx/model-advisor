@@ -24,6 +24,9 @@ declare module 'claude-code' {
       lastLevel: number | null
       // The session's effort at the last step: the decision is taken before the turn.
       seenEffort: Effort | null
+      // The level the person chose to keep at a question: on that model the effort
+      // does not go below it. The effort is null until the session's first step.
+      floor: { model: string; effort: Effort | null } | null
     }
   }
 }
